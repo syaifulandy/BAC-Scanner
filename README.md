@@ -154,8 +154,3 @@ Tool ini hanya untuk:
 - Internal assessment
 
 Dilarang digunakan tanpa izin target.
-
-
-===============================================
-🔥 Built for modern web app testing
-===============================================
