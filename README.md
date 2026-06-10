@@ -1,5 +1,5 @@
 ===============================================
-🔥 UNIVERSAL BAC SCANNER (SPA + API + IDOR)
+UNIVERSAL BAC SCANNER
 ===============================================
 
 DESCRIPTION
@@ -110,38 +110,19 @@ ROLES CONFIGURATION
 Generate template:
   ./bac_scanner.sh --gen-roles
 
-Example roles.json:
-
-{
-  "baseline_role": "admin",
-  "roles": [
-    {
-      "name": "admin",
-      "cookie": "SESSION=admin_cookie",
-      "enabled": true
-    },
-    {
-      "name": "user",
-      "cookie": "SESSION=user_cookie",
-      "enabled": true
-    }
-  ]
-}
-
-
 -----------------------------------------------
 OUTPUT STRUCTURE
 -----------------------------------------------
 
 bac_output/
   target-domain/
-    ├── admin.jsonl      (katana crawl result)
-    ├── admin.txt        (all discovered URLs)
-    ├── js_seed.txt      (initial JS list)
-    ├── js/              (downloaded JS files)
-    ├── api.txt          (extracted endpoints)
-    ├── final.txt        (normalized endpoints)
-    ├── findings.txt     (vulnerability findings)
+    admin.jsonl      (katana crawl result)
+    admin.txt        (all discovered URLs)
+    js_seed.txt      (initial JS list)
+    js/              (downloaded JS files)
+    api.txt          (extracted endpoints)
+    final.txt        (normalized endpoints)
+    findings.txt     (vulnerability findings)
 
 
 -----------------------------------------------
