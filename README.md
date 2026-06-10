@@ -113,17 +113,14 @@ Generate template:
 OUTPUT STRUCTURE
 -----------------------------------------------
 
-bac_output/
-  target-domain/
-    admin.jsonl      (katana crawl result)
-    admin.txt        (all discovered URLs)
-    js_seed.txt      (initial JS list)
-    js/              (downloaded JS files)
-    api.txt          (extracted endpoints)
-    final.txt        (normalized endpoints)
-    findings.txt     (vulnerability findings)
-
-
+bac_output/target-domain/
+1. admin.jsonl      (katana crawl result)
+2. admin.txt        (all discovered URLs)
+3. js_seed.txt      (initial JS list)
+4. js/              (downloaded JS files)
+5. api.txt          (extracted endpoints)
+6. final.txt        (normalized endpoints)
+7. findings.txt     (vulnerability findings)
 -----------------------------------------------
 NOTES
 -----------------------------------------------
