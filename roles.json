@@ -1,0 +1,21 @@
+{
+  "baseline_role": "admin",
+  "roles": [
+    {
+      "name": "admin",
+      "enabled": true,
+      "cookie": ""
+    },
+    {
+      "name": "management",
+      "enabled": true,
+      "cookie": ""
+    },
+    {
+      "name": "viewer",
+      "enabled": true,
+      "cookie": "" 
+    }
+  ]
+}
+
