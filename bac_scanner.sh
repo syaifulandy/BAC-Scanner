@@ -83,9 +83,19 @@ get_cookie() {
 BASELINE_COOKIE=$(get_cookie "$BASELINE_ROLE")
 
 # =========================
-# HASH
+# HASH & PREVIEW
 # =========================
 hash_body() { md5sum | cut -d' ' -f1; }
+
+RESP_PREVIEW=200
+
+preview_body() {
+  head -c "$RESP_PREVIEW" \
+  | tr '\r\n' '  ' \
+  | sed 's/|/ /g' \
+  | sed 's/"/'\''/g' \
+  | sed 's/  */ /g'
+}
 
 # =========================
 # JS RECURSIVE
@@ -109,7 +119,7 @@ discover_js_recursive() {
       echo "$js" >> "$out/visited.txt"
       f="$out/$(basename "$js")"
 
-      curl -s "$js" -o "$f"
+      curl -s --max-time 10 "$js" -o "$f"
 
       grep -rhoE '\.\./(nodes|chunks)/[a-zA-Z0-9._-]+\.js' "$f" \
       | sed 's|\.\./||' \
@@ -151,31 +161,51 @@ extract_api() {
 # =========================
 # IDOR CHECK 🔥
 # =========================
-idor_test() {
 
+idor_test() {
   url=$1
   cookie=$2
+  role=$3
+  DIR=$4
+  OUT=$5
 
-  # hanya path, bukan domain
   path=$(echo "$url" | cut -d/ -f4-)
 
   if [[ "$path" =~ /([0-9]+) ]]; then
     id=${BASH_REMATCH[1]}
     next=$((id + 1))
 
-    new_path=$(echo "$path" | sed "s/$id/$next/")
+    new_path=$(echo "$path" | sed "0,/$id/{s/$id/$next/}")
     base=$(echo "$url" | cut -d/ -f1-3)
-
     test_url="$base/$new_path"
 
-    r1=$(curl -s -H "Cookie: $cookie" "$url")
-    r2=$(curl -s -H "Cookie: $cookie" "$test_url")
+    # ambil response target
+    TMP=$(mktemp)
+    CODE2=$(curl -s --max-time 10 -H "Cookie: $cookie" "$test_url" -o "$TMP" -w "%{http_code}")
+    r2=$(cat "$TMP")
+    rm -f "$TMP"
+
+    # ambil original
+    r1=$(curl -s --max-time 10 -H "Cookie: $cookie" "$url")
 
     h1=$(echo "$r1" | hash_body)
     h2=$(echo "$r2" | hash_body)
 
-    if [[ "$h1" != "$h2" ]]; then
-      echo "[IDOR] $url -> $test_url"
+
+    LEN1=$(echo -n "$r1" | wc -c)
+    LEN2=$(echo -n "$r2" | wc -c)
+
+    DIFF=$(( LEN1 - LEN2 ))
+    DIFF=${DIFF#-}
+
+    if [[ "$CODE2" == "200" && ( "$DIFF" -gt 20 || "$h1" != "$h2" ) ]]; then
+      fname=$(gen_resp_file "$test_url-$cookie")
+      resp_path="responses/$fname.txt"
+      echo "$r2" > "$DIR/$resp_path"
+
+      preview=$(echo "$r2" | preview_body)
+      echo "IDOR|$role|$url->$test_url|$CODE2|$LEN2|$preview|$resp_path" >> "$OUT"
+
     fi
   fi
 }
@@ -184,50 +214,81 @@ idor_test() {
 # TEST
 # =========================
 test_url() {
-
   url=$1
   OUT=$2
+  DIR=$3
 
   echo "[CHECK] $url"
 
   # no auth
   BODY=$(mktemp)
-  code=$(curl -s -o "$BODY" -w "%{http_code}" "$url")
+  code=$(curl -s --max-time 10 -o "$BODY" -w "%{http_code}" "$url")
 
   if [[ "$code" == "200" ]] && ! grep -qi 'login' "$BODY"; then
-    echo "[CRITICAL] $url" >> "$OUT"
+    body_preview=$(cat "$BODY" | preview_body)
+    len=$(wc -c <"$BODY")
+
+    fname=$(gen_resp_file "$url")
+    resp_path="responses/$fname.txt"
+    cp "$BODY" "$DIR/$resp_path"
+    echo "CRITICAL|unauth|$url|$code|$len|$body_preview|$resp_path" >> "$OUT"
+
   fi
 
   ADM_BODY=$(mktemp)
-  ADM_CODE=$(curl -s -H "Cookie: $BASELINE_COOKIE" "$url" -o "$ADM_BODY" -w "%{http_code}")
+  ADM_CODE=$(curl -s --max-time 10 -H "Cookie: $BASELINE_COOKIE" "$url" -o "$ADM_BODY" -w "%{http_code}")
   ADM_HASH=$(cat "$ADM_BODY" | hash_body)
 
-  for role in $(jq -r '.roles[].name' roles.json); do
+  for role in $(jq -r '.roles[].name' "$ROLE_FILE"); do
 
     [[ "$role" == "$BASELINE_ROLE" ]] && continue
 
     cookie=$(get_cookie "$role")
 
     R_BODY=$(mktemp)
-    R_CODE=$(curl -s -H "Cookie: $cookie" "$url" -o "$R_BODY" -w "%{http_code}")
+    R_CODE=$(curl -s --max-time 10 -H "Cookie: $cookie" "$url" -o "$R_BODY" -w "%{http_code}")
     R_HASH=$(cat "$R_BODY" | hash_body)
-
-    if [[ "$ADM_CODE" =~ 403|401 && "$R_CODE" == "200" ]]; then
-      echo "[PRIV_ESC][$role] $url" >> "$OUT"
+    if [[ ( "$ADM_CODE" == "403" || "$ADM_CODE" == "401" ) && "$R_CODE" == "200" ]]; then
+      echo "PRIV_ESC|$role|$url|$R_CODE|0|-|-" >> "$OUT"
     fi
 
-    if [[ "$ADM_CODE" == "200" && "$R_CODE" == "200" && "$ADM_HASH" != "$R_HASH" ]]; then
-      echo "[DATA_DIFF][$role] $url" >> "$OUT"
+    sleep 0.3
+
+    # refresh admin
+    ADM_BODY2=$(mktemp)
+    ADM_CODE2=$(curl -s --max-time 10 -H "Cookie: $BASELINE_COOKIE" "$url" -o "$ADM_BODY2" -w "%{http_code}")
+    ADM_HASH2=$(cat "$ADM_BODY2" | hash_body)
+
+    if [[ "$ADM_CODE2" == "200" && "$R_CODE" == "200" ]]; then
+      if [[ "$ADM_HASH2" != "$R_HASH" ]] || ! diff -q "$ADM_BODY2" "$R_BODY" >/dev/null; then
+
+        R_PREVIEW=$(cat "$R_BODY" | preview_body)
+        R_LEN=$(wc -c <"$R_BODY")
+
+        fname=$(gen_resp_file "$url-$role")
+        resp_path="responses/$fname.txt"
+        cp "$R_BODY" "$DIR/$resp_path"
+        echo "DATA_DIFF|$role|$url|$R_CODE|$R_LEN|$R_PREVIEW|$resp_path" >> "$OUT"
+      fi
     fi
+
+    rm -f "$ADM_BODY2"
+
 
     # 🔥 IDOR test
-    idor_test "$url" "$cookie" >> "$OUT"
+    idor_test "$url" "$cookie" "$role" "$DIR" "$OUT"
 
     rm -f "$R_BODY"
   done
 
   rm -f "$ADM_BODY" "$BODY"
 }
+
+
+gen_resp_file() {
+  echo "$1" | md5sum | cut -d' ' -f1
+}
+
 
 # =========================
 # SCAN
@@ -240,10 +301,16 @@ scan_target() {
 
   DIR="$OUTPUT_DIR/$DOMAIN"
   mkdir -p "$DIR/js"
+  mkdir -p "$DIR/responses"
 
   echo "[TARGET] $DOMAIN"
 
   katana -u "$URL" -H "Cookie: $BASELINE_COOKIE" -jc -xhr -silent -j -o "$DIR/admin.jsonl"
+
+  if [[ ! -s "$DIR/admin.jsonl" ]]; then
+    echo "[WARN] katana empty for $DOMAIN"
+    return
+  fi
 
   jq -r '.request.endpoint?' "$DIR/admin.jsonl" | grep "$DOMAIN" > "$DIR/admin.txt"
 
@@ -264,7 +331,7 @@ scan_target() {
     [[ -z "$ep" ]] && continue
 
     if [[ "$ep" =~ ^/ ]]; then
-      echo "$BASE$API_PREFIX$ep" >> "$DIR/final.txt"
+      echo "$BASE$API_PREFIX$ep" | sed 's|//|/|g' | sed 's|https:/|https://|' >> "$DIR/final.txt"
     fi
 
   done < "$DIR/api.txt"
@@ -287,13 +354,12 @@ scan_target() {
 
   echo "[OK] testing: $(wc -l < "$DIR/final.txt")"
 
-  # ✅ RESET FINDINGS
-  > "$DIR/findings.txt"
+  echo "TYPE|ROLE|URL|STATUS|LENGTH|PREVIEW|RESP_FILE" > "$DIR/findings.txt"
 
   # ✅ TESTING
   while read -r url; do
-    test_url "$url" "$DIR/findings.txt" &
-
+    test_url "$url" "$DIR/findings.txt" "$DIR" &
+    sleep "$DELAY"
     if (( $(jobs -r | wc -l) >= THREADS )); then
       wait -n
     fi
