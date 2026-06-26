@@ -8,7 +8,6 @@ DELAY=0.2
 API_PREFIX=""
 EXCLUDE_PATTERN=""
 
-
 # =========================
 # ARG
 # =========================
@@ -213,6 +212,7 @@ idor_test() {
 # =========================
 # TEST
 # =========================
+
 test_url() {
   url=$1
   OUT=$2
@@ -220,66 +220,90 @@ test_url() {
 
   echo "[CHECK] $url"
 
-  # no auth
-  BODY=$(mktemp)
-  code=$(curl -s --max-time 10 -o "$BODY" -w "%{http_code}" "$url")
-
-  if [[ "$code" == "200" ]] && ! grep -qi 'login' "$BODY"; then
-    body_preview=$(cat "$BODY" | preview_body)
-    len=$(wc -c <"$BODY")
-
-    fname=$(gen_resp_file "$url")
-    resp_path="responses/$fname.txt"
-    cp "$BODY" "$DIR/$resp_path"
-    echo "CRITICAL|unauth|$url|$code|$len|$body_preview|$resp_path" >> "$OUT"
-
-  fi
-
+  # ADMIN
   ADM_BODY=$(mktemp)
   ADM_CODE=$(curl -s --max-time 10 -H "Cookie: $BASELINE_COOKIE" "$url" -o "$ADM_BODY" -w "%{http_code}")
   ADM_HASH=$(cat "$ADM_BODY" | hash_body)
 
-  for role in $(jq -r '.roles[].name' "$ROLE_FILE"); do
+  # NO AUTH
+  BODY=$(mktemp)
+  N_CODE=$(curl -s --max-time 10 -o "$BODY" -w "%{http_code}" "$url")
 
-    [[ "$role" == "$BASELINE_ROLE" ]] && continue
+  ROLES=$(jq -r '.roles[].name' "$ROLE_FILE")
+  # LOOP ROLES
+  for role in $ROLES; do
 
     cookie=$(get_cookie "$role")
 
     R_BODY=$(mktemp)
     R_CODE=$(curl -s --max-time 10 -H "Cookie: $cookie" "$url" -o "$R_BODY" -w "%{http_code}")
     R_HASH=$(cat "$R_BODY" | hash_body)
-    if [[ ( "$ADM_CODE" == "403" || "$ADM_CODE" == "401" ) && "$R_CODE" == "200" ]]; then
-      echo "PRIV_ESC|$role|$url|$R_CODE|0|-|-" >> "$OUT"
+
+    # skip baseline
+    if [[ "$role" == "$BASELINE_ROLE" ]]; then
+      rm -f "$R_BODY"
+      continue
     fi
 
-    sleep 0.3
 
-    # refresh admin
-    ADM_BODY2=$(mktemp)
-    ADM_CODE2=$(curl -s --max-time 10 -H "Cookie: $BASELINE_COOKIE" "$url" -o "$ADM_BODY2" -w "%{http_code}")
-    ADM_HASH2=$(cat "$ADM_BODY2" | hash_body)
+    # 🔥 SHARED ACCESS (hanya kalau response SAMA)
+    if [[ "$ADM_CODE" == "200" && "$R_CODE" == "200" ]]; then
 
-    if [[ "$ADM_CODE2" == "200" && "$R_CODE" == "200" ]]; then
-      if [[ "$ADM_HASH2" != "$R_HASH" ]] || ! diff -q "$ADM_BODY2" "$R_BODY" >/dev/null; then
+      if [[ "$ADM_HASH" == "$R_HASH" ]] && diff -q "$ADM_BODY" "$R_BODY" >/dev/null; then
+        
+        LEN=$(wc -c < "$R_BODY")
+        PREVIEW=$(cat "$R_BODY" | preview_body)
+        fname=$(gen_resp_file "$url-$role")
+        cp "$R_BODY" "$DIR/responses/$fname.txt"
 
-        R_PREVIEW=$(cat "$R_BODY" | preview_body)
-        R_LEN=$(wc -c <"$R_BODY")
+        echo "POTENTIAL_BAC|$role|$url|$R_CODE|$LEN|$PREVIEW|responses/$fname.txt" >> "$OUT"
+      fi
+
+    fi
+
+    # 🔥 PRIV ESC
+    if [[ ( "$ADM_CODE" == "403" || "$ADM_CODE" == "401" ) && "$R_CODE" == "200" ]]; then
+      
+      LEN=$(wc -c < "$R_BODY")
+      PREVIEW=$(cat "$R_BODY" | preview_body)
+      fname=$(gen_resp_file "$url-$role")
+
+      cp "$R_BODY" "$DIR/responses/$fname.txt"
+
+      echo "PRIV_ESC|$role|$url|$R_CODE|$LEN|$PREVIEW|responses/$fname.txt" >> "$OUT"
+    fi
+
+    # 🔥 DATA DIFF
+    if [[ "$ADM_CODE" == "200" && "$R_CODE" == "200" ]]; then
+      if [[ "$ADM_HASH" != "$R_HASH" ]] || ! diff -q "$ADM_BODY" "$R_BODY" >/dev/null; then
+
+        PREVIEW=$(cat "$R_BODY" | preview_body)
+        LEN=$(wc -c < "$R_BODY")
 
         fname=$(gen_resp_file "$url-$role")
-        resp_path="responses/$fname.txt"
-        cp "$R_BODY" "$DIR/$resp_path"
-        echo "DATA_DIFF|$role|$url|$R_CODE|$R_LEN|$R_PREVIEW|$resp_path" >> "$OUT"
+        cp "$R_BODY" "$DIR/responses/$fname.txt"
+
+        echo "DATA_DIFF|$role|$url|$R_CODE|$LEN|$PREVIEW|responses/$fname.txt" >> "$OUT"
       fi
     fi
 
-    rm -f "$ADM_BODY2"
-
-
-    # 🔥 IDOR test
+    # 🔥 IDOR
     idor_test "$url" "$cookie" "$role" "$DIR" "$OUT"
 
     rm -f "$R_BODY"
   done
+
+  # 🔥 UNAUTH SAVE
+
+  if [[ "$N_CODE" == "200" ]] && ! grep -qi 'login' "$BODY"; then
+    PREVIEW=$(cat "$BODY" | preview_body)
+    LEN=$(wc -c < "$BODY")
+
+    fname=$(gen_resp_file "$url-noauth")
+    cp "$BODY" "$DIR/responses/$fname.txt"
+
+    echo "CRITICAL|unauth|$url|$N_CODE|$LEN|$PREVIEW|responses/$fname.txt" >> "$OUT"
+  fi
 
   rm -f "$ADM_BODY" "$BODY"
 }
@@ -300,44 +324,99 @@ scan_target() {
   BASE="https://$DOMAIN"
 
   DIR="$OUTPUT_DIR/$DOMAIN"
-  mkdir -p "$DIR/js"
+  mkdir -p "$DIR/raw"
+  mkdir -p "$DIR/processed"
+  mkdir -p "$DIR/analysis"
+  mkdir -p "$DIR/findings"
   mkdir -p "$DIR/responses"
+  mkdir -p "$DIR/js"
 
   echo "[TARGET] $DOMAIN"
 
-  katana -u "$URL" -H "Cookie: $BASELINE_COOKIE" -jc -xhr -silent -j -o "$DIR/admin.jsonl"
+  # ADMIN
+  katana -u "$URL" -H "Cookie: $BASELINE_COOKIE" -jc -xhr -silent -j -o "$DIR/raw/admin.jsonl" > /dev/null 2>&1
 
-  if [[ ! -s "$DIR/admin.jsonl" ]]; then
+  # USER
+  USER_COOKIE=$(get_cookie "user")
+  katana -u "$URL" -H "Cookie: $USER_COOKIE" -jc -xhr -silent -j -o "$DIR/raw/user.jsonl" > /dev/null 2>&1
+
+  # NO AUTH
+  katana -u "$URL" -jc -xhr -silent -j -o "$DIR/raw/noauth.jsonl" > /dev/null 2>&1
+
+
+  if [[ ! -s "$DIR/raw/admin.jsonl" ]]; then
     echo "[WARN] katana empty for $DOMAIN"
     return
   fi
 
-  jq -r '.request.endpoint?' "$DIR/admin.jsonl" | grep "$DOMAIN" > "$DIR/admin.txt"
+  jq -r '.request.endpoint?' "$DIR/raw/admin.jsonl" | grep "$DOMAIN" > "$DIR/raw/admin.txt"
+  jq -r '.request.endpoint?' "$DIR/raw/user.jsonl"  | grep "$DOMAIN" > "$DIR/raw/user.txt"
+  jq -r '.request.endpoint?' "$DIR/raw/noauth.jsonl" | grep "$DOMAIN" > "$DIR/raw/noauth.txt"
 
-  grep '\.js' "$DIR/admin.txt" > "$DIR/js_seed.txt"
+  # normalize dulu
+  sort -u "$DIR/raw/admin.txt" -o "$DIR/raw/admin.txt"
+  sort -u "$DIR/raw/user.txt" -o "$DIR/raw/user.txt"
+  sort -u "$DIR/raw/noauth.txt" -o "$DIR/raw/noauth.txt"
 
-  discover_js_recursive "$BASE/app/immutable" "$DIR/js_seed.txt" "$DIR/js"
 
-  extract_api "$DIR/js" "$DIR/api.txt"
+  # =========================
+  # ACCESS SURFACE ANALYSIS
+  # =========================
+
+
+  # admin only
+  comm -23 "$DIR/raw/admin.txt" "$DIR/raw/user.txt" > "$DIR/analysis/admin_only.txt"
+
+  # shared admin-user
+  comm -12 "$DIR/raw/admin.txt" "$DIR/raw/user.txt" > "$DIR/analysis/shared_user.txt"
+
+  # public exposure
+  comm -12 "$DIR/raw/admin.txt" "$DIR/raw/noauth.txt" > "$DIR/analysis/public.txt"
+
+  # user only
+  comm -23 "$DIR/raw/user.txt" "$DIR/raw/admin.txt" > "$DIR/analysis/user_only.txt"
+
+
+  cat "$DIR/raw/admin.txt" "$DIR/raw/user.txt" "$DIR/raw/noauth.txt" > "$DIR/raw/all.txt"
+  sort -u "$DIR/raw/all.txt" -o "$DIR/raw/all.txt"
+
+
+  cat "$DIR/raw/admin.txt" "$DIR/raw/user.txt" "$DIR/raw/noauth.txt" \
+  | grep '\.js' > "$DIR/processed/js_seed.txt"
+
+
+  discover_js_recursive "$BASE/app/immutable" "$DIR/processed/js_seed.txt" "$DIR/js"
+
+  extract_api "$DIR/js" "$DIR/processed/api.txt"
 
   # 🔥 CLEAN FORMAT
-  sed -i 's|.*:||' "$DIR/api.txt"
+  sed -i 's|.*:||' "$DIR/processed/api.txt"
 
   
   # 🔥 BUILD FINAL
-  > "$DIR/final.txt"
+  > "$DIR/processed/final.txt"
 
+  # API
   while read -r ep; do
     [[ -z "$ep" ]] && continue
 
     if [[ "$ep" =~ ^/ ]]; then
-      echo "$BASE$API_PREFIX$ep" | sed 's|//|/|g' | sed 's|https:/|https://|' >> "$DIR/final.txt"
+      echo "$BASE$API_PREFIX$ep" | sed 's|//|/|g' | sed 's|https:/|https://|' >> "$DIR/processed/final.txt"
     fi
+  done < "$DIR/processed/api.txt"
 
-  done < "$DIR/api.txt"
+  # TAMBAH KATANA ENDPOINT
+  cat "$DIR/raw/all.txt" >> "$DIR/processed/final.txt"
 
-  # hapus duplicate
-  sort -u "$DIR/final.txt" -o "$DIR/final.txt"
+  # dedupe
+  sort -u "$DIR/processed/final.txt" -o "$DIR/processed/final.txt"
+
+  
+  # 🔥 FILTER STATIC FILE
+  grep -Ev '\.(js|css|png|jpg|jpeg|svg|woff|woff2|ttf|map|ico|gif)$' "$DIR/processed/final.txt" > "$DIR/processed/final_clean.txt"
+  mv "$DIR/processed/final_clean.txt" "$DIR/processed/final.txt"
+
+
 
   # ✅ FILTER EXCLUDE (FIXED POSITION)
   DEFAULT_EXCLUDE="logout|signout|revoke|csrf|token"
@@ -349,24 +428,95 @@ scan_target() {
     PATTERN="$DEFAULT_EXCLUDE"
   fi
 
-  grep -Ev "$PATTERN" "$DIR/final.txt" > "$DIR/tmp.txt"
-  mv "$DIR/tmp.txt" "$DIR/final.txt"
+  grep -Ev "$PATTERN" "$DIR/processed/final.txt" > "$DIR/processed/tmp.txt"
+  mv "$DIR/processed/tmp.txt" "$DIR/processed/final.txt"
 
-  echo "[OK] testing: $(wc -l < "$DIR/final.txt")"
-
-  echo "TYPE|ROLE|URL|STATUS|LENGTH|PREVIEW|RESP_FILE" > "$DIR/findings.txt"
+  echo "[OK] testing: $(wc -l < "$DIR/processed/final.txt")"
+  echo "TYPE|ROLE|URL|STATUS|LENGTH|PREVIEW|RESP_FILE" > "$DIR/findings/raw_finding.txt"
 
   # ✅ TESTING
   while read -r url; do
-    test_url "$url" "$DIR/findings.txt" "$DIR" &
+    test_url "$url" "$DIR/findings/raw_finding.txt" "$DIR" &
+
     sleep "$DELAY"
     if (( $(jobs -r | wc -l) >= THREADS )); then
       wait -n
     fi
 
-  done < "$DIR/final.txt"
+  done < "$DIR/processed/final.txt"
 
   wait
+
+  
+  # simpan header, sort isi tanpa header, gabung lagi
+  head -n 1 "$DIR/findings/raw_finding.txt" > "$DIR/processed/tmp_header.txt"
+
+  tail -n +2 "$DIR/findings/raw_finding.txt" | sort -u > "$DIR/processed/tmp_body.txt"
+
+  cat "$DIR/processed/tmp_header.txt" "$DIR/processed/tmp_body.txt" > "$DIR/findings/raw_finding.txt"
+
+
+  echo "[STEP] signal analysis"
+
+  RAW="$DIR/findings/raw_finding.txt"
+  HIGH="$DIR/findings/high_signal.txt"
+  LOW="$DIR/findings/low_signal.txt"
+
+  # extract preview frequency
+  cut -d'|' -f6 "$RAW" \
+  | tail -n +2 \
+  | sort \
+  | uniq -c \
+  | sort -nr > "$DIR/processed/preview_freq.txt"
+
+  # ambil yang sering muncul (threshold = >5)
+  awk '$1 > 5 { $1=""; sub(/^ /,""); print }' "$DIR/processed/preview_freq.txt" \
+  > "$DIR/processed/preview_noise.txt"
+
+  # buat header
+  head -n 1 "$RAW" > "$HIGH"
+  head -n 1 "$RAW" > "$LOW"
+
+
+  # skip header saat isi
+  tail -n +2 "$RAW" | grep -vFf "$DIR/processed/preview_noise.txt" >> "$HIGH"
+  tail -n +2 "$RAW" | grep -Ff "$DIR/processed/preview_noise.txt" >> "$LOW"
+
+
+  echo "[OK] high signal: $(($(wc -l < "$HIGH") - 1))"
+  echo "[OK] low signal: $(($(wc -l < "$LOW") - 1))"
+
+  echo "[STEP] grouping high signal"
+
+  GROUPED="$DIR/findings/high_signal_grouped.txt"
+
+  # header baru
+  echo "TYPE|ROLES|URLS|STATUS|COUNT|PREVIEW" > "$GROUPED"
+
+  tail -n +2 "$HIGH" | awk -F'|' '
+  {
+    key = $6    # preview
+    type[key] = $1
+    status[key] = $4
+
+    if (!(key in roles)) {
+      roles[key] = $2
+      urls[key] = $3
+      count[key] = 1
+    } else {
+      roles[key] = roles[key] "," $2
+      urls[key] = urls[key] "," $3
+      count[key]++
+    }
+  }
+  END {
+    for (k in roles) {
+      print type[k] "|" roles[k] "|" urls[k] "|" status[k] "|" count[k] "|" k
+    }
+  }
+  ' >> "$GROUPED"
+
+  echo "[OK] grouped entries: $(($(wc -l < "$GROUPED") - 1))"
 
 
   echo "[DONE]"
