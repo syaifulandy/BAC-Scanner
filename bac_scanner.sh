@@ -334,14 +334,14 @@ scan_target() {
   echo "[TARGET] $DOMAIN"
 
   # ADMIN
-  katana -u "$URL" -H "Cookie: $BASELINE_COOKIE" -jc -jsl -aff -xhr -silent -j -o "$DIR/raw/admin.jsonl" > /dev/null 2>&1
+  katana -u "$URL" -H "Cookie: $BASELINE_COOKIE" -jc -jsl -aff -xhr -hl -system-chrome -system-chrome-path /usr/bin/chromium -no-sandbox -silent -j -o "$DIR/raw/admin.jsonl" > /dev/null 2>&1
 
   # USER
   USER_COOKIE=$(get_cookie "user")
-  katana -u "$URL" -H "Cookie: $USER_COOKIE" -jc -jsl -aff -xhr -silent -j -o "$DIR/raw/user.jsonl" > /dev/null 2>&1
+  katana -u "$URL" -H "Cookie: $USER_COOKIE" -jc -jsl -aff -xhr -hl -system-chrome -system-chrome-path /usr/bin/chromium -no-sandbox -silent -j -o "$DIR/raw/user.jsonl" > /dev/null 2>&1
 
   # NO AUTH
-  katana -u "$URL" -jc -jsl -aff -xhr -silent -j -o "$DIR/raw/noauth.jsonl" > /dev/null 2>&1
+  katana -u "$URL" -jc -jsl -aff -xhr -hl -system-chrome -system-chrome-path /usr/bin/chromium -no-sandbox -silent -j -o "$DIR/raw/noauth.jsonl" > /dev/null 2>&1
 
 
   if [[ ! -s "$DIR/raw/admin.jsonl" ]]; then
