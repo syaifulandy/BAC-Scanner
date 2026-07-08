@@ -23,8 +23,14 @@ while [[ "$#" -gt 0 ]]; do
 {
   "baseline_role": "admin",
   "roles": [
-    { "name": "admin", "cookie": "SESSION=admin", "enabled": true },
-    { "name": "user", "cookie": "SESSION=user", "enabled": true }
+    {
+      "name":"admin",
+      "cookie":"SESSION=admin"
+    },
+    {
+      "name":"user",
+      "bearer":"eyJ..."
+    }
   ]
 }
 EOF
@@ -75,11 +81,23 @@ mkdir -p "$OUTPUT_DIR"
 # =========================
 BASELINE_ROLE=$(jq -r '.baseline_role' "$ROLE_FILE")
 
-get_cookie() {
-  jq -r --arg r "$1" '.roles[] | select(.name==$r) | .cookie' "$ROLE_FILE"
+get_auth_header() {
+
+    jq -r --arg r "$1" '
+        .roles[]
+        | select(.name==$r)
+        | if .cookie then
+            "Cookie: \(.cookie)"
+          elif .bearer then
+            "Authorization: Bearer \(.bearer)"
+          else
+            ""
+          end
+    ' "$ROLE_FILE"
+
 }
 
-BASELINE_COOKIE=$(get_cookie "$BASELINE_ROLE")
+BASELINE_HEADER=$(get_auth_header "$BASELINE_ROLE")
 
 # =========================
 # HASH & PREVIEW
@@ -163,7 +181,7 @@ extract_api() {
 
 idor_test() {
   url=$1
-  cookie=$2
+  header=$2
   role=$3
   DIR=$4
   OUT=$5
@@ -180,12 +198,12 @@ idor_test() {
 
     # ambil response target
     TMP=$(mktemp)
-    CODE2=$(curl -s --max-time 10 -H "Cookie: $cookie" "$test_url" -o "$TMP" -w "%{http_code}")
+    CODE2=$(curl -s --max-time 10 -H "$header" "$test_url" -o "$TMP" -w "%{http_code}")
     r2=$(cat "$TMP")
     rm -f "$TMP"
 
     # ambil original
-    r1=$(curl -s --max-time 10 -H "Cookie: $cookie" "$url")
+    r1=$(curl -s --max-time 10 -H "$header" "$url")
 
     h1=$(echo "$r1" | hash_body)
     h2=$(echo "$r2" | hash_body)
@@ -198,7 +216,7 @@ idor_test() {
     DIFF=${DIFF#-}
 
     if [[ "$CODE2" == "200" && ( "$DIFF" -gt 20 || "$h1" != "$h2" ) ]]; then
-      fname=$(gen_resp_file "$test_url-$cookie")
+      fname=$(gen_resp_file "$test_url-$role")
       resp_path="responses/$fname.txt"
       echo "$r2" > "$DIR/$resp_path"
 
@@ -222,7 +240,7 @@ test_url() {
 
   # ADMIN
   ADM_BODY=$(mktemp)
-  ADM_CODE=$(curl -s --max-time 10 -H "Cookie: $BASELINE_COOKIE" "$url" -o "$ADM_BODY" -w "%{http_code}")
+  ADM_CODE=$(curl -s --max-time 10 -H "$BASELINE_HEADER" "$url" -o "$ADM_BODY" -w "%{http_code}")
   ADM_HASH=$(cat "$ADM_BODY" | hash_body)
 
   # NO AUTH
@@ -232,11 +250,10 @@ test_url() {
   ROLES=$(jq -r '.roles[].name' "$ROLE_FILE")
   # LOOP ROLES
   for role in $ROLES; do
-
-    cookie=$(get_cookie "$role")
+    header=$(get_auth_header "$role")
 
     R_BODY=$(mktemp)
-    R_CODE=$(curl -s --max-time 10 -H "Cookie: $cookie" "$url" -o "$R_BODY" -w "%{http_code}")
+    R_CODE=$(curl -s --max-time 10 -H "$header" "$url" -o "$R_BODY" -w "%{http_code}")
     R_HASH=$(cat "$R_BODY" | hash_body)
 
     # skip baseline
@@ -288,7 +305,7 @@ test_url() {
     fi
 
     # 🔥 IDOR
-    idor_test "$url" "$cookie" "$role" "$DIR" "$OUT"
+    idor_test "$url" "$header" "$role" "$DIR" "$OUT"
 
     rm -f "$R_BODY"
   done
@@ -334,11 +351,17 @@ scan_target() {
   echo "[TARGET] $DOMAIN"
 
   # ADMIN
-  katana -u "$URL" -H "Cookie: $BASELINE_COOKIE" -jc -jsl -aff -xhr -hl -pls domcontentloaded -system-chrome -system-chrome-path /usr/bin/chromium -no-sandbox -silent -j -o "$DIR/raw/admin.jsonl" > /dev/null 2>&1
+  katana -u "$URL" -H "$BASELINE_HEADER" -jc -jsl -aff -xhr -hl -pls domcontentloaded -system-chrome -system-chrome-path /usr/bin/chromium -no-sandbox -silent -j -o "$DIR/raw/admin.jsonl" > /dev/null 2>&1
 
   # USER
-  USER_COOKIE=$(get_cookie "user")
-  katana -u "$URL" -H "Cookie: $USER_COOKIE" -jc -jsl -aff -xhr -hl -pls domcontentloaded -system-chrome -system-chrome-path /usr/bin/chromium -no-sandbox -silent -j -o "$DIR/raw/user.jsonl" > /dev/null 2>&1
+  USER_ROLE=$(
+    jq -r \
+      --arg base "$BASELINE_ROLE" \
+      '.roles[] | select(.name != $base) | .name' \
+      "$ROLE_FILE" | head -1
+    )
+  USER_HEADER=$(get_auth_header "$USER_ROLE")
+  katana -u "$URL" -H "$USER_HEADER" -jc -jsl -aff -xhr -hl -pls domcontentloaded -system-chrome -system-chrome-path /usr/bin/chromium -no-sandbox -silent -j -o "$DIR/raw/user.jsonl" > /dev/null 2>&1
 
   # NO AUTH
   katana -u "$URL" -jc -jsl -aff -xhr -hl -pls domcontentloaded -system-chrome -system-chrome-path /usr/bin/chromium -no-sandbox -silent -j -o "$DIR/raw/noauth.jsonl" > /dev/null 2>&1
